@@ -67,7 +67,7 @@ def main(args: argparse.Namespace) -> None:
     
     # define model related paths   
     selected_manipulation_key, selected_transform = augmentation(config)
-    model_tag = "WavLM(4)_{}_64600_raw".format(selected_manipulation_key)
+    model_tag = "WavLM(V_2_T)_{}_96000_".format(selected_manipulation_key)
     if args.comment:
         model_tag = model_tag + "_{}".format(args.comment)
     model_tag = output_dir / model_tag
@@ -182,7 +182,7 @@ def get_loader(
                       "ASVspoof5.dev.track_1.tsv")
     eval_trial_path = (database_path / 
                        "ASVspoof5.eval.track_1.tsv")
-    cut = 64600
+    cut = 96000
     #---------------------------------------------------------------------------------------------------------------------------
     # train
     d_label_trn, file_train = genSpoof_list(
@@ -193,7 +193,7 @@ def get_loader(
     print("no. train files:", len(file_train))
 
     train_set = AudioTrainDataset(
-        list_IDs=file_train[:300],
+        list_IDs=file_train,
         labels=d_label_trn,
         base_dir=audio_trn_database_path,
         cut=cut
@@ -222,7 +222,7 @@ def get_loader(
     print("no. dev files:", len(file_dev))
 
     dev_set = AudioTestDataset(
-        list_IDs=file_dev[:300],
+        list_IDs=file_dev,
         base_dir=audio_dev_database_path,
         cut=cut
     )
@@ -368,7 +368,7 @@ def produce_evaluation_file(
         trial_lines = f_trl.readlines()
     fname_list = []
     score_list = []
-    cut_length = 64600
+    cut_length = 96000
     
     for X_audio, utt_id in tqdm(data_loader):
         X_audio = X_audio.to(device)
@@ -427,7 +427,7 @@ def train_epoch(
             optimizer=None,
             config=config,
             device=device,
-            cut_length=64600,
+            cut_length=96000,
             selected_transform=selected_transform,
             augmentations_on_cpu=None
         )
