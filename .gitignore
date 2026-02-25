@@ -3,5 +3,4 @@ Dataset/asvspoof_5/
 Dataset/ESC-50-master/
 CLAD_150_10_2310.pth
 nohup.out
-k_exp_result
-s_exp_result
+exp_result
