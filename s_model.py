@@ -12,7 +12,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch import Tensor
-from torchvision.models.resnet import resnet34, ResNet34_Weights
 from transformers import WavLMModel
 
 from typing import Callable, Optional, Union
