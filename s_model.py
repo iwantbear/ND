@@ -300,7 +300,7 @@ class STJGAT(nn.Module):
 
         # GAT for TC
         self.gat_tc = GraphAttentionLayer(in_dim=in_channels, out_dim=out_dim)
-        self.fc_proj = nn.Linear(in_features=25 * out_dim, out_features=512)
+        self.fc_proj = nn.Linear(in_features=37 * out_dim, out_features=512)
         self.fc_head = nn.Sequential(
             nn.Linear(512, 256),  
             nn.ReLU(),
