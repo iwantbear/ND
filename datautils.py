@@ -415,7 +415,7 @@ class AddZeroPadding(nn.Module):
         return self.add_zero_padding(audio, left_len, right_len)
 #-----------------------------------------------------------------------------------------------
 class AudioTrainDataset(Dataset):
-    def __init__(self, list_IDs, labels, base_dir, cut=64600):
+    def __init__(self, list_IDs, labels, base_dir, cut=96000):
         self.list_IDs = list_IDs
         self.labels = labels
         self.base_dir = base_dir
@@ -438,7 +438,7 @@ class AudioTrainDataset(Dataset):
         return x_inp, y
 
 class AudioTestDataset(Dataset):
-    def __init__(self, list_IDs, base_dir, cut=64600):
+    def __init__(self, list_IDs, base_dir, cut=96000):
         self.list_IDs = list_IDs
         self.base_dir = base_dir
         self.cut = cut
