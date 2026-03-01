@@ -299,7 +299,7 @@ class STJGAT(nn.Module):
 
         # GAT for TC
         self.gat_tc = GraphAttentionLayer(in_dim=in_channels, out_dim=out_dim)
-        self.fc_proj = nn.Linear(in_features=37 * out_dim, out_features=512)
+        self.fc_proj = nn.Linear(in_features=25 * out_dim, out_features=512)
         self.fc_head = nn.Sequential(
             nn.Linear(512, 256),  
             nn.ReLU(),
@@ -447,7 +447,6 @@ class SincConv_fast(nn.Module):
         n_lin=torch.linspace(0, (self.kernel_size/2)-1, steps=int((self.kernel_size/2))) # computing only half of the window
         self.window_=0.54-0.46*torch.cos(2*math.pi*n_lin/self.kernel_size);
 
-
         # (1, kernel_size/2)
         n = (self.kernel_size - 1) / 2.0
         self.n_ = 2*math.pi*torch.arange(-n, 0).view(1, -1) / self.sample_rate # Due to symmetry, I only need half of the time axes
@@ -561,17 +560,33 @@ class GatingRe2blocks(nn.Module):
 
         return out
 # -------------------------------------------------------------------------------------
-# V_1_F
+# V_1_T
 class WNN(nn.Module):
-    def __init__(self, num_classes=2):
+    def __init__(self, in_channels=5, num_classes=2):
         super().__init__()
+        lp = torch.tensor([1.0, 1.0]) / 2**0.5
+        hp = torch.tensor([1.0, -1.0]) / 2**0.5
+
+        self.register_buffer("low_pass", lp.view(1, 1, 2).repeat(in_channels, 1, 1))
+        self.register_buffer("high_pass", hp.view(1, 1, 2).repeat(in_channels, 1, 1))
+        self.in_channels = in_channels
+
+        self.high1_proj = nn.Conv1d(
+            in_channels,
+            in_channels,
+            kernel_size=3,
+            stride=2,
+            padding=1,
+            groups=in_channels,
+            bias=False
+        )
 
         self.encoder = nn.Sequential(
-            nn.Conv1d(10, 32, kernel_size=3, padding=1, bias=False),
-            nn.BatchNorm1d(32),
+            nn.Conv1d(15, 15, kernel_size=3, padding=1, groups=15, bias=False),
+            nn.BatchNorm1d(15),
             nn.ReLU(inplace=True),
 
-            nn.Conv1d(32, 64, kernel_size=3, padding=1, bias=False),
+            nn.Conv1d(15, 64, kernel_size=1, bias=False),
             nn.BatchNorm1d(64),
             nn.ReLU(inplace=True),
         )
@@ -579,36 +594,36 @@ class WNN(nn.Module):
         self.classifier = nn.Sequential(
             nn.Linear(64 * 2, 64),
             nn.ReLU(inplace=True),
-            nn.Dropout(0.3),
+            nn.Dropout(0.2),
             nn.Linear(64, num_classes)
         )
 
     def forward(self, x):
-        """
-        x: (B, 5, T)  
-        """
-        # 1-Level F-DWT 
-        c1 = x[:, 0:4, :]   # (c1,c2,c3,c4)
-        c2 = x[:, 1:5, :]   # (c2,c3,c4,c5)
+        # x: (B, 5, T)
+        if x.shape[-1] % 2 != 0:
+            x = F.pad(x, (0, 1), mode="reflect")
 
-        A1 = (c1 + c2) / (2**0.5)   # (B,4,T)
-        D1 = (c1 - c2) / (2**0.5)   # (B,4,T)
+        # 1 DWT
+        low1 = F.conv1d(x, self.low_pass, stride=2, groups=self.in_channels)
+        high1 = F.conv1d(x, self.high_pass, stride=2, groups=self.in_channels)
 
-        # 2-Level F-DWT
-        a1_1 = A1[:, 0:3, :]   # (A1_1,A1_2,A1_3)
-        a1_2 = A1[:, 1:4, :]   # (A1_2,A1_3,A1_4)
+        # 2 DWT
+        if low1.shape[-1] % 2 != 0:
+            low1 = F.pad(low1, (0, 1), mode="reflect")
 
-        A2 = (a1_1 + a1_2) / (2**0.5)   # (B,3,T)
-        D2 = (a1_1 - a1_2) / (2**0.5)   # (B,3,T)
-        
-        feat = torch.cat([D1, A2, D2], dim=1)  # (B,10,T)
-        x = self.encoder(feat)  # (B,64,T)
+        low2 = F.conv1d(low1, self.low_pass, stride=2, groups=self.in_channels)
+        high2 = F.conv1d(low1, self.high_pass, stride=2, groups=self.in_channels)
+
+        high1_down = self.high1_proj(high1)
+
+        x = torch.cat([high1_down, low2, high2], dim=1)  # (B, 15, T/4)
+        x = self.encoder(x)
 
         mean = x.mean(dim=-1)
         std = x.std(dim=-1)
-        stat = torch.cat([mean, std], dim=1)  # (B,128)
+        feat = torch.cat([mean, std], dim=1)
 
-        out = self.classifier(stat)
+        out = self.classifier(feat)
         return out
 #----------------------------------------------------------------------------------------------------
 # Model
