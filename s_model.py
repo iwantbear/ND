@@ -606,7 +606,6 @@ class WNN(nn.Module):
 
         out = self.classifier(stat)
         return out
-        
 #----------------------------------------------------------------------------------------------------
 # Model
 class Permute(nn.Module):
