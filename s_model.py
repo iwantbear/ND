@@ -496,13 +496,13 @@ class SincConv_fast(nn.Module):
 # LF
 # Gating-Res2Net
 class GatingRe2blocks(nn.Module):
-    def __init__(self, out_channels=125, scale=5):
+    def __init__(self, in_channels=5, out_channels=125, scale=5):
         super(GatingRe2blocks, self).__init__()
         self.scale = scale
         self.width = out_channels // scale
 
         self.conv1_list = nn.ModuleList([
-            nn.Conv1d(2, self.width, kernel_size=1) for _ in range(scale)
+            nn.Conv1d(1, self.width, kernel_size=1) for _ in range(scale)
         ])
         self.conv3_list = nn.ModuleList([
             nn.Conv1d(self.width, self.width, kernel_size=3, padding=1) for _ in range(scale - 1)
@@ -513,30 +513,30 @@ class GatingRe2blocks(nn.Module):
             nn.Linear(out_channels // 4, scale),        
             nn.Sigmoid()                                 
         )
-        self.identity_proj = nn.Conv1d(10, out_channels, kernel_size=1)
+        self.identity_proj = nn.Conv1d(in_channels, out_channels, kernel_size=1)
         self.proj_final = nn.Conv1d(out_channels, out_channels, kernel_size=1)
         self.bn_list = nn.ModuleList([nn.BatchNorm1d(self.width) for _ in range(scale)])
-        self.relu = nn.ReLU(inplace=True)
         self.final_bn = nn.BatchNorm1d(out_channels)
-        self.gap = nn.AdaptiveAvgPool1d(1)              
-        self.ln = nn.LayerNorm(out_channels)         
-        self.fc1 = nn.Linear(out_channels, 64)          # 125 -> 64
-        self.leaky_relu = nn.LeakyReLU(0.2)             
-        self.dropout = nn.Dropout(p=0.3)                
-        self.fc2 = nn.Linear(64, 2)
-        
+        self.gap = nn.AdaptiveAvgPool1d(1)
+        self.ln = nn.LayerNorm(out_channels)
+        self.fc = nn.Sequential(
+            nn.Linear(out_channels, 64),
+            nn.LeakyReLU(0.2),
+            nn.Dropout(0.3),
+            nn.Linear(64, 2)
+        ) 
 
-    def forward(self, low_freq):
-        identity = self.identity_proj(low_freq)
-        low_grouped = torch.chunk(low_freq, self.scale, dim=1)
+    def forward(self, high_freq):
+        identity = self.identity_proj(high_freq)
+        high_grouped = torch.chunk(high_freq, self.scale, dim=1)
 
         y = [None] * self.scale
-        y[4] = self.relu(self.bn_list[4](self.conv1_list[4](low_grouped[4])))
+        y[4] = F.relu(self.bn_list[4](self.conv1_list[4](high_grouped[4])))
 
         for i in range(self.scale - 2, -1, -1):
-            x_i = self.conv1_list[i](low_grouped[i])
-            yi = self.conv3_list[i](x_i + y[i+1])
-            y[i] = self.relu(self.bn_list[i](yi))
+            x_i = self.conv1_list[i](high_grouped[i])
+            yi = self.conv3_list[i](x_i + y[i+1]) 
+            y[i] = F.relu(self.bn_list[i](yi))
 
         # Gating
         ms_feat = torch.cat(y, dim=1)
@@ -548,61 +548,55 @@ class GatingRe2blocks(nn.Module):
             w = gate_weights[:, i].view(-1, 1, 1)
             y_weighted.append(y[i] * w)
 
-        ms_feat_gated = torch.cat(y_weighted, dim=1)
-        ms_feat_gated = self.proj_final(ms_feat_gated)   
-                   
-        out = self.relu(self.final_bn(ms_feat_gated + identity))  # (B, 125, 64350)
-        out_pooled = self.gap(out).squeeze(-1)          # (B, 125, 1) -> (B, 125)
-        out_normed = self.ln(out_pooled)                
+        out = torch.cat(y_weighted, dim=1)
+        out = self.proj_final(out)
+        out = F.relu(self.final_bn(out + identity))               
 
-        x = self.fc1(out_normed)
-        x = self.leaky_relu(x)                          
-        x = self.dropout(x)
-        out = self.fc2(x)                      # (B, 2)
+        out_pooled = self.gap(out).squeeze(-1)
+        out_normed = self.ln(out_pooled)                     # (B, 2)
 
-        return out
+        return self.fc(out_normed)
 # -------------------------------------------------------------------------------------
-# V_1_T
+# V_2_F
 class WNN(nn.Module):
     def __init__(self, num_classes=2):
         super().__init__()
         self.encoder = nn.Sequential(
-            nn.Conv1d(10, 32, kernel_size=3, padding=1, bias=False),
-            nn.BatchNorm1d(32),
-            nn.ReLU(inplace=True),
-            nn.Conv1d(32, 64, kernel_size=3, padding=1, bias=False),
+            nn.Conv1d(25, 64, kernel_size=3, padding=1, bias=False),
             nn.BatchNorm1d(64),
             nn.ReLU(inplace=True),
+            nn.Conv1d(64, 128, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm1d(128),
+            nn.ReLU(inplace=True),
         )
+        
         self.classifier = nn.Sequential(
-            nn.Linear(64 * 2, 64),
+            nn.Linear(128 * 2, 64),
             nn.ReLU(inplace=True),
             nn.Dropout(0.3),
             nn.Linear(64, num_classes)
         )
             
-    def forward(self, x):
-        """
-        x: (B, 5, T)  
-        """
+    def forward(self, low_freq):
+       
         # 1-Level F-DWT 
-        c1 = x[:, 0:4, :]   # (c1,c2,c3,c4)
-        c2 = x[:, 1:5, :]   # (c2,c3,c4,c5)
-        A1 = (c1 + c2) / (2**0.5)   # (B,4,T)
-        D1 = (c1 - c2) / (2**0.5)   # (B,4,T)
+        c1 = low_freq[:, 0:9, :]   # (B, 9, T)
+        c2 = low_freq[:, 1:10, :]  # (B, 9, T)
+        A1 = (c1 + c2) / (2**0.5)  
+        D1 = (c1 - c2) / (2**0.5)   
         
         # 2-Level F-DWT
-        a1_1 = A1[:, 0:3, :]   # (A1_1,A1_2,A1_3)
-        a1_2 = A1[:, 1:4, :]   # (A1_2,A1_3,A1_4)
-        A2 = (a1_1 + a1_2) / (2**0.5)   # (B,3,T)
-        D2 = (a1_1 - a1_2) / (2**0.5)   # (B,3,T)
+        a1_1 = A1[:, 0:8, :]   
+        a1_2 = A1[:, 1:9, :]   
+        A2 = (a1_1 + a1_2) / (2**0.5)   # (B, 8, T)
+        D2 = (a1_1 - a1_2) / (2**0.5)   # (B, 8, T)
 
-        feat = torch.cat([D1, A2, D2], dim=1)  # (B,10,T)
-        x = self.encoder(feat)  # (B,64,T)
+        feat = torch.cat([D1, A2, D2], dim=1)  
+        x = self.encoder(feat)  # (B, 128, T)
 
         mean = x.mean(dim=-1)
         std = x.std(dim=-1)
-        stat = torch.cat([mean, std], dim=1)  # (B,128)
+        stat = torch.cat([mean, std], dim=1)  # (B, 256)
 
         out = self.classifier(stat)
         return out
@@ -680,7 +674,7 @@ class FusionModel(nn.Module):
         raw_audio = audio_input.unsqueeze(1) if audio_input.dim() == 2 else audio_input
         
         low_freq, high_freq = self.sinc_layer(raw_audio)
-        out_low = self.low_branch(low_freq)
-        out_high = self.high_branch(high_freq)
+        out_low = self.high_branch(low_freq)
+        out_high = self.low_branch(high_freq)
         
         return out_stj, out_bldl, out_low, out_high
