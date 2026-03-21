@@ -12,7 +12,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch import Tensor
-from transformers import WavLMModel
+from transformers import WavLMModel, Wav2Vec2Model
 
 from typing import Callable, Optional, Union
 #----------------------------------------------------------------------------------------------------
@@ -481,22 +481,28 @@ class SincConv_fast(nn.Module):
 
         filters = (band_pass).view(self.out_channels, 1, self.kernel_size)
 
-        out = F.conv1d(waveforms, filters, stride=self.stride,
+        low_filters = filters[0:10, :, :]
+        low_freq = F.conv1d(waveforms, low_filters, stride=self.stride,
                             padding=self.padding, dilation=self.dilation,
-                            bias=None, groups=1)
+                            bias=None, groups=1) # (B, 10, 64350)
 
-        return out
+        high_filters = filters[10:15, :, :]
+        high_freq = F.conv1d(waveforms, high_filters, stride=self.stride,
+                             padding=self.padding, dilation=self.dilation,
+                             bias=None, groups=1) # (B, 5, 64350)
+
+        return low_freq, high_freq
 # --------------------------------------------------------------------------------------------------
 # LF
 # Gating-Res2Net
 class GatingRe2blocks(nn.Module):
-    def __init__(self, in_channels=30, out_channels=120, scale=5):
+    def __init__(self, out_channels=125, scale=5):
         super(GatingRe2blocks, self).__init__()
         self.scale = scale
         self.width = out_channels // scale
 
         self.conv1_list = nn.ModuleList([
-            nn.Conv1d(5, self.width, kernel_size=1) for _ in range(scale)
+            nn.Conv1d(2, self.width, kernel_size=1) for _ in range(scale)
         ])
         self.conv3_list = nn.ModuleList([
             nn.Conv1d(self.width, self.width, kernel_size=3, padding=1) for _ in range(scale - 1)
@@ -507,30 +513,28 @@ class GatingRe2blocks(nn.Module):
             nn.Linear(out_channels // 4, scale),        
             nn.Sigmoid()                                 
         )
-        self.identity_proj = nn.Conv1d(in_channels, out_channels, kernel_size=1)
+        self.identity_proj = nn.Conv1d(10, out_channels, kernel_size=1)
         self.proj_final = nn.Conv1d(out_channels, out_channels, kernel_size=1)
         self.bn_list = nn.ModuleList([nn.BatchNorm1d(self.width) for _ in range(scale)])
-        self.final_bn = nn.BatchNorm1d(out_channels)
         self.relu = nn.ReLU(inplace=True)
-        self.gap = nn.AdaptiveAvgPool1d(1)
-        self.ln = nn.LayerNorm(out_channels)
-        self.fc = nn.Sequential(
-            nn.Linear(out_channels, 64),
-            nn.LeakyReLU(0.2),
-            nn.Dropout(0.3),
-            nn.Linear(64, 2)
-        ) 
-
-    def forward(self, x):
-        identity = self.identity_proj(x)
-        chunks = torch.chunk(x, self.scale, dim=1)
+        self.final_bn = nn.BatchNorm1d(out_channels)
+        self.gap = nn.AdaptiveAvgPool1d(1)              
+        self.ln = nn.LayerNorm(out_channels)         
+        self.fc1 = nn.Linear(out_channels, 64)          # 125 -> 64
+        self.leaky_relu = nn.LeakyReLU(0.2)             
+        self.dropout = nn.Dropout(p=0.3)                
+        self.fc2 = nn.Linear(64, 2)
+        
+    def forward(self, low_freq):
+        identity = self.identity_proj(low_freq)
+        low_grouped = torch.chunk(low_freq, self.scale, dim=1)
 
         y = [None] * self.scale
-        y[0] = self.relu(self.bn_list[0](self.conv1_list[0](chunks[0])))
+        y[4] = self.relu(self.bn_list[4](self.conv1_list[4](low_grouped[4])))
 
-        for i in range(1, self.scale):
-            xi = self.conv1_list[i](chunks[i])
-            yi = self.conv3_list[i-1](xi + y[i-1])
+        for i in range(self.scale - 2, -1, -1):
+            x_i = self.conv1_list[i](low_grouped[i])
+            yi = self.conv3_list[i](x_i + y[i+1])
             y[i] = self.relu(self.bn_list[i](yi))
 
         # Gating
@@ -546,55 +550,61 @@ class GatingRe2blocks(nn.Module):
         ms_feat_gated = torch.cat(y_weighted, dim=1)
         ms_feat_gated = self.proj_final(ms_feat_gated)   
                    
-        out = self.relu(self.final_bn(ms_feat_gated + identity))              
-        out_pooled = self.gap(out).squeeze(-1)
+        out = self.relu(self.final_bn(ms_feat_gated + identity))  # (B, 125, 64350)
+        out_pooled = self.gap(out).squeeze(-1)          # (B, 125, 1) -> (B, 125)
         out_normed = self.ln(out_pooled)                     # (B, 2)
-        final = self.fc(out_normed)
         
-        return final
+        x = self.fc1(out_normed)
+        x = self.leaky_relu(x)                          
+        x = self.dropout(x)
+        out = self.fc2(x)                      # (B, 2)
+
+        return out
 # -------------------------------------------------------------------------------------
-# V_3_F
+# V_1_F
 class WNN(nn.Module):
     def __init__(self, num_classes=2):
         super(WNN, self).__init__()
-        self.low_fc = nn.Linear(64, 2)
-        self.a2_encoder = nn.Sequential(
-            nn.Conv1d(13, 64, kernel_size=3, padding=1, bias=False),
+        self.encoder = nn.Sequential(
+            nn.Conv1d(10, 32, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm1d(32),
+            nn.ReLU(inplace=True),
+            nn.Conv1d(32, 64, kernel_size=3, padding=1, bias=False),
             nn.BatchNorm1d(64),
             nn.ReLU(inplace=True),
-            nn.AdaptiveAvgPool1d(1)
         )
-        self.d_gating_res2net = GatingRe2blocks(in_channels=25, out_channels=120, scale=5)
-        self.final_classifier = nn.Linear(64 + 2, num_classes)
-
+        self.classifier = nn.Sequential(
+            nn.Linear(64 * 2, 64),
+            nn.ReLU(inplace=True),
+            nn.Dropout(0.3),
+            nn.Linear(64, num_classes)
+        )
+        
     def forward(self, x):
-        # --- 1-Level Frequency-DWT ---
-        c1 = x[:, 0:14, :]   
-        c2 = x[:, 1:15, :]   
-        A1 = (c1 + c2) / (2**0.5)
-        D1 = (c1 - c2) / (2**0.5)
+        """
+        x: (B, 5, T)  
+        """
+        # 1-Level F-DWT 
+        c1 = x[:, 0:4, :]   # (c1,c2,c3,c4)
+        c2 = x[:, 1:5, :]   # (c2,c3,c4,c5)
+        A1 = (c1 + c2) / (2**0.5)   # (B,4,T)
+        D1 = (c1 - c2) / (2**0.5)   # (B,4,T)
         
-        # --- 2-Level Frequency-DWT ---
-        a1_1 = A1[:, 0:13, :]  
-        a1_2 = A1[:, 1:14, :]  
-        A2 = (a1_1 + a1_2) / (2**0.5)
-        D2 = (a1_1 - a1_2) / (2**0.5)
-
-        feat_a2 = self.a2_encoder(A2).squeeze(-1) 
-        out_low = self.low_fc(feat_a2)
+        # 2-Level F-DWT
+        a1_1 = A1[:, 0:3, :]   # (A1_1,A1_2,A1_3)
+        a1_2 = A1[:, 1:4, :]   # (A1_2,A1_3,A1_4)
+        A2 = (a1_1 + a1_2) / (2**0.5)   # (B,3,T)
+        D2 = (a1_1 - a1_2) / (2**0.5)   # (B,3,T)
         
-        feat_list = []
-        for i in range(D2.size(1)):  # 13
-            feat_list.append(D2[:, i:i+1, :])  # D2[i]
-            feat_list.append(D1[:, i:i+1, :])  # D1[i]
+        feat = torch.cat([D1, A2, D2], dim=1)  # (B,10,T)
+        x = self.encoder(feat)  # (B,64,T)
+        
+        mean = x.mean(dim=-1)
+        std = x.std(dim=-1)
+        stat = torch.cat([mean, std], dim=1)  # (B,128)
 
-        feat_list.append(D1[:, -1:, :])  # D1[13]
-        feat_interleave = torch.cat(feat_list, dim=1)  # (B, 27, T)
-        feat_d_in = feat_interleave[:, 1:-1, :]  # (B, 25, T)
-        feat_d_in = torch.flip(feat_d_in, dims=[1])
-        feat_d = self.d_gating_res2net(feat_d_in)
-
-        return out_low, feat_d
+        out = self.classifier(stat)
+        return out
 #----------------------------------------------------------------------------------------------------
 # Model
 class Permute(nn.Module):
@@ -654,20 +664,22 @@ class AudioModel(nn.Module):
 class FusionModel(nn.Module):
     def __init__(self, device):
         super().__init__()
-        self.wavlm_model = WavLMModel.from_pretrained("microsoft/wavlm-large").to(device)
+        self.wav2vec2_model = Wav2Vec2Model.from_pretrained("facebook/wav2vec2-large-xlsr-53").to(device)
         self.time_model = AudioModel().to(device)
         self.sinc_layer = SincConv_fast(out_channels=15).to(device) 
-        self.wnn_branch = WNN().to(device)
+        self.low_branch = GatingRe2blocks().to(device)              
+        self.high_branch = WNN().to(device)
 
-        for param in self.wavlm_model.parameters():
+        for param in self.wav2vec2_model.parameters():
             param.requires_grad = False
 
     def forward(self, audio_input):
-        wavlm_features = self.wavlm_model(audio_input).last_hidden_state
-        out_stj, out_bldl = self.time_model(wavlm_features)
+        xlsr_features = self.wav2vec2_model(audio_input).last_hidden_state
+        out_stj, out_bldl = self.time_model(xlsr_features)
         raw_audio = audio_input.unsqueeze(1) if audio_input.dim() == 2 else audio_input
         
-        sinc_feat = self.sinc_layer(raw_audio)
-        out_low, out_high = self.wnn_branch(sinc_feat)
+        low_freq, high_freq = self.sinc_layer(raw_audio)
+        out_low = self.low_branch(low_freq)
+        out_high = self.high_branch(high_freq)
         
         return out_stj, out_bldl, out_low, out_high
