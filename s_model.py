@@ -12,7 +12,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch import Tensor
-from transformers import WavLMModel, Wav2Vec2Model
+from transformers import WavLMModel,HubertModel
 
 from typing import Callable, Optional, Union
 #----------------------------------------------------------------------------------------------------
@@ -664,18 +664,18 @@ class AudioModel(nn.Module):
 class FusionModel(nn.Module):
     def __init__(self, device):
         super().__init__()
-        self.wav2vec2_model = Wav2Vec2Model.from_pretrained("facebook/wav2vec2-large-xlsr-53").to(device)
+        self.hubert_model = HubertModel.from_pretrained("facebook/hubert-large-ls960-ft").to(device)
         self.time_model = AudioModel().to(device)
         self.sinc_layer = SincConv_fast(out_channels=15).to(device) 
         self.low_branch = GatingRe2blocks().to(device)              
         self.high_branch = WNN().to(device)
 
-        for param in self.wav2vec2_model.parameters():
+        for param in self.hubert_model.parameters():
             param.requires_grad = False
 
     def forward(self, audio_input):
-        xlsr_features = self.wav2vec2_model(audio_input).last_hidden_state
-        out_stj, out_bldl = self.time_model(xlsr_features)
+        hubert_features = self.hubert_model(audio_input).last_hidden_state
+        out_stj, out_bldl = self.time_model(hubert_features)
         raw_audio = audio_input.unsqueeze(1) if audio_input.dim() == 2 else audio_input
         
         low_freq, high_freq = self.sinc_layer(raw_audio)
