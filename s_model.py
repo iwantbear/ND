@@ -562,7 +562,7 @@ class GatingRe2blocks(nn.Module):
 
         return out
 # -------------------------------------------------------------------------------------
-# V_1_F
+# V_1_F (sym2)
 class WNN(nn.Module):
     def __init__(self, num_classes=2):
         super(WNN, self).__init__()
