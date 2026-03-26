@@ -2,6 +2,7 @@
 # by HH
 import math
 import random
+import pywt
 import numpy as np
 from typing import Union
 
@@ -12,7 +13,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch import Tensor
-from transformers import WavLMModel,HubertModel
+from transformers import WavLMModel
 
 from typing import Callable, Optional, Union
 #----------------------------------------------------------------------------------------------------
@@ -565,45 +566,80 @@ class GatingRe2blocks(nn.Module):
 class WNN(nn.Module):
     def __init__(self, num_classes=2):
         super(WNN, self).__init__()
+        wavelet = pywt.Wavelet('sym2')
+        dec_lo = torch.tensor(wavelet.dec_lo[::-1], dtype=torch.float32).view(1, 1, -1)
+        dec_hi = torch.tensor(wavelet.dec_hi[::-1], dtype=torch.float32).view(1, 1, -1)
+        self.register_buffer('filter_lo', dec_lo)
+        self.register_buffer('filter_hi', dec_hi)
+
+        # feat channel : D1(8) + A2(12) + D2(12) = 32
         self.encoder = nn.Sequential(
-            nn.Conv1d(10, 32, kernel_size=3, padding=1, bias=False),
+            nn.Conv1d(32, 32, kernel_size=3, padding=1, bias=False), 
             nn.BatchNorm1d(32),
             nn.ReLU(inplace=True),
             nn.Conv1d(32, 64, kernel_size=3, padding=1, bias=False),
             nn.BatchNorm1d(64),
-            nn.ReLU(inplace=True),
+            nn.ReLU(inplace=True)
         )
         self.classifier = nn.Sequential(
-            nn.Linear(64 * 2, 64),
+            nn.Linear(64 * 2, 64), 
             nn.ReLU(inplace=True),
             nn.Dropout(0.3),
             nn.Linear(64, num_classes)
         )
+
+    def sym2_op(self, x_combo):
+        t = x_combo.shape[1]
+        lo = self.filter_lo.repeat(t, 1, 1)
+        hi = self.filter_hi.repeat(t, 1, 1)
         
+        a = torch.nn.functional.conv1d(x_combo, lo, groups=t, stride=1)
+        d = torch.nn.functional.conv1d(x_combo, hi, groups=t, stride=1)
+        return a.transpose(1, 2), d.transpose(1, 2)
+
     def forward(self, x):
         """
-        x: (B, 5, T)  
+        x: (B, 5, T) 
         """
-        # 1-Level F-DWT 
-        c1 = x[:, 0:4, :]   # (c1,c2,c3,c4)
-        c2 = x[:, 1:5, :]   # (c2,c3,c4,c5)
-        A1 = (c1 + c2) / (2**0.5)   # (B,4,T)
-        D1 = (c1 - c2) / (2**0.5)   # (B,4,T)
-        
-        # 2-Level F-DWT
-        a1_1 = A1[:, 0:3, :]   # (A1_1,A1_2,A1_3)
-        a1_2 = A1[:, 1:4, :]   # (A1_2,A1_3,A1_4)
-        A2 = (a1_1 + a1_2) / (2**0.5)   # (B,3,T)
-        D2 = (a1_1 - a1_2) / (2**0.5)   # (B,3,T)
-        
-        feat = torch.cat([D1, A2, D2], dim=1)  # (B,10,T)
-        x = self.encoder(feat)  # (B,64,T)
-        
-        mean = x.mean(dim=-1)
-        std = x.std(dim=-1)
-        stat = torch.cat([mean, std], dim=1)  # (B,128)
+        x_t = x.transpose(1, 2) # (B, T, 5)
 
-        out = self.classifier(stat)
+        # --- Level-1 ---
+        c1_1 = x_t[:, :, [0, 1, 2, 3]]  # (0, 1, 2, 3)
+        c1_2 = x_t[:, :, [1, 2, 3, 4]]  # (1, 2, 3, 4)
+        
+        a1_list, d1_list = [], []
+        for c in [c1_1, c1_2]:
+            a, d = self.sym2_op(c)
+            a1_list.append(a); d1_list.append(d)
+        
+        # Concat: (B, 4+4, T) -> (B, 8, T)
+        # Index: (0, 1, 2, 3, 1, 2, 3, 4) 
+        D1 = torch.cat(d1_list, dim=1) 
+        A1 = torch.cat(a1_list, dim=1) 
+        
+        # --- Level-2 ---
+        A1_t = A1.transpose(1, 2) # (B, T, 8)
+        # C2_1: (0, 1, 2, 3) -> A1_t의 0~3
+        # C2_2: (2, 3, 1, 2) -> A1_t의 2, 3 (C1_1) + 4, 5 (C1_2)
+        # C2_3: (1, 2, 3, 4) -> A1_t의 4, 5, 6, 7 (C1_2)
+        c2_1 = A1_t[:, :, [0, 1, 2, 3]]           
+        c2_2 = A1_t[:, :, [2, 3, 4, 5]] 
+        c2_3 = A1_t[:, :, [4, 5, 6, 7]] 
+        
+        a2_list, d2_list = [], []
+        for c in [c2_1, c2_2, c2_3]:
+            a, d = self.sym2_op(c)
+            a2_list.append(a); d2_list.append(d)
+            
+        # Concat : (B, 4+4+4, T) -> (B, 12, T)
+        A2 = torch.cat(a2_list, dim=1) 
+        D2 = torch.cat(d2_list, dim=1) 
+        feat = torch.cat([D1, A2, D2], dim=1) # (B, 32, T)
+        
+        x_enc = self.encoder(feat)
+        stat = torch.cat([x_enc.mean(dim=-1), x_enc.std(dim=-1)], dim=1) # (B, 128)
+        out = self.classifier(stat) # (B, 2)
+        
         return out
 #----------------------------------------------------------------------------------------------------
 # Model
@@ -664,18 +700,18 @@ class AudioModel(nn.Module):
 class FusionModel(nn.Module):
     def __init__(self, device):
         super().__init__()
-        self.hubert_model = HubertModel.from_pretrained("facebook/hubert-large-ls960-ft").to(device)
+        self.wavlm_model = WavLMModel.from_pretrained("microsoft/wavlm-large").to(device)
         self.time_model = AudioModel().to(device)
         self.sinc_layer = SincConv_fast(out_channels=15).to(device) 
         self.low_branch = GatingRe2blocks().to(device)              
         self.high_branch = WNN().to(device)
 
-        for param in self.hubert_model.parameters():
+        for param in self.wavlm_model.parameters():
             param.requires_grad = False
 
     def forward(self, audio_input):
-        hubert_features = self.hubert_model(audio_input).last_hidden_state
-        out_stj, out_bldl = self.time_model(hubert_features)
+        wavlm_features = self.wavlm_model(audio_input).last_hidden_state
+        out_stj, out_bldl = self.time_model(wavlm_features)
         raw_audio = audio_input.unsqueeze(1) if audio_input.dim() == 2 else audio_input
         
         low_freq, high_freq = self.sinc_layer(raw_audio)
