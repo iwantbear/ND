@@ -589,13 +589,15 @@ class WNN(nn.Module):
         )
 
     def sym2_op(self, x_combo):
-        t = x_combo.shape[1]
-        lo = self.filter_lo.repeat(t, 1, 1)
-        hi = self.filter_hi.repeat(t, 1, 1)
-        
-        a = torch.nn.functional.conv1d(x_combo, lo, groups=t, stride=1)
-        d = torch.nn.functional.conv1d(x_combo, hi, groups=t, stride=1)
-        return a.transpose(1, 2), d.transpose(1, 2)
+        x_in = x_combo.transpose(1, 2) 
+        c_num = x_in.shape[1] 
+    
+        lo = self.filter_lo.repeat(c_num, 1, 1)
+        hi = self.filter_hi.repeat(c_num, 1, 1)
+        a = torch.nn.functional.conv1d(x_in, lo, groups=c_num, padding=1)
+        d = torch.nn.functional.conv1d(x_in, hi, groups=c_num, padding=1)
+
+        return a, d
 
     def forward(self, x):
         """
@@ -623,8 +625,8 @@ class WNN(nn.Module):
         # C2_2: (2, 3, 1, 2) -> A1_t의 2, 3 (C1_1) + 4, 5 (C1_2)
         # C2_3: (1, 2, 3, 4) -> A1_t의 4, 5, 6, 7 (C1_2)
         c2_1 = A1_t[:, :, [0, 1, 2, 3]]           
-        c2_2 = A1_t[:, :, [2, 3, 4, 5]] 
-        c2_3 = A1_t[:, :, [4, 5, 6, 7]] 
+        c2_2 = A1_t[:, :, [2, 3, 0, 1]] 
+        c2_3 = A1_t[:, :, [1, 2, 3, 4]] 
         
         a2_list, d2_list = [], []
         for c in [c2_1, c2_2, c2_3]:
@@ -634,6 +636,12 @@ class WNN(nn.Module):
         # Concat : (B, 4+4+4, T) -> (B, 12, T)
         A2 = torch.cat(a2_list, dim=1) 
         D2 = torch.cat(d2_list, dim=1) 
+        
+        min_t = min(D1.size(-1), A2.size(-1), D2.size(-1))
+        D1 = D1[:, :, :min_t]
+        A2 = A2[:, :, :min_t]
+        D2 = D2[:, :, :min_t]
+        
         feat = torch.cat([D1, A2, D2], dim=1) # (B, 32, T)
         
         x_enc = self.encoder(feat)
