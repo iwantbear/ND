@@ -562,22 +562,22 @@ class GatingRe2blocks(nn.Module):
 
         return out
 # -------------------------------------------------------------------------------------
-# V_1_F (sym2)
+# V_1_F (sym3)
 class WNN(nn.Module):
     def __init__(self, num_classes=2):
         super(WNN, self).__init__()
-        wavelet = pywt.Wavelet('sym2')
+        wavelet = pywt.Wavelet('sym3')
         dec_lo = torch.tensor(wavelet.dec_lo[::-1], dtype=torch.float32).view(1, 1, -1)
         dec_hi = torch.tensor(wavelet.dec_hi[::-1], dtype=torch.float32).view(1, 1, -1)
         self.register_buffer('filter_lo', dec_lo)
         self.register_buffer('filter_hi', dec_hi)
 
-        # feat channel : D1(8) + A2(12) + D2(12) = 32
+        # final feat channel : D1(12) + A2(18) + D2(18) = 48
         self.encoder = nn.Sequential(
-            nn.Conv1d(32, 32, kernel_size=3, padding=1, bias=False), 
-            nn.BatchNorm1d(32),
+            nn.Conv1d(48, 64, kernel_size=3, padding=1, bias=False), 
+            nn.BatchNorm1d(64),
             nn.ReLU(inplace=True),
-            nn.Conv1d(32, 64, kernel_size=3, padding=1, bias=False),
+            nn.Conv1d(64, 64, kernel_size=3, padding=1, bias=False),
             nn.BatchNorm1d(64),
             nn.ReLU(inplace=True)
         )
@@ -588,65 +588,69 @@ class WNN(nn.Module):
             nn.Linear(64, num_classes)
         )
 
-    def sym2_op(self, x_combo):
-        x_in = x_combo.transpose(1, 2) 
-        c_num = x_in.shape[1] 
-    
-        lo = self.filter_lo.repeat(c_num, 1, 1)
-        hi = self.filter_hi.repeat(c_num, 1, 1)
-        a = torch.nn.functional.conv1d(x_in, lo, groups=c_num, padding=1)
-        d = torch.nn.functional.conv1d(x_in, hi, groups=c_num, padding=1)
-
-        return a, d
+    def sym3_op(self, x_combo):
+        """
+        x_combo: (B, T, 6) 
+        """
+        t = x_combo.shape[1]
+        lo = self.filter_lo.repeat(t, 1, 1)
+        hi = self.filter_hi.repeat(t, 1, 1)
+        
+        a = torch.nn.functional.conv1d(x_combo, lo, groups=t, stride=1, padding=5)
+        d = torch.nn.functional.conv1d(x_combo, hi, groups=t, stride=1, padding=5)
+        
+        return a[:, :, :6], d[:, :, :6]
 
     def forward(self, x):
         """
-        x: (B, 5, T) 
+        x: (B, 5, T)
         """
-        x_t = x.transpose(1, 2) # (B, T, 5)
+        batch_size, _, time_len = x.shape
+        zero_pad = torch.zeros(batch_size, 1, time_len).to(x.device)
 
-        # --- Level-1 ---
-        c1_1 = x_t[:, :, [0, 1, 2, 3]]  # (0, 1, 2, 3)
-        c1_2 = x_t[:, :, [1, 2, 3, 4]]  # (1, 2, 3, 4)
+        # --- 1-Level DWT ---
+        # c1: (1,2,3,4,5,0), c2: (0,1,2,3,4,5)
+        c1_1 = torch.cat([x, zero_pad], dim=1).transpose(1, 2) # (B, T, 6)
+        c1_2 = torch.cat([zero_pad, x], dim=1).transpose(1, 2) # (B, T, 6)
         
         a1_list, d1_list = [], []
         for c in [c1_1, c1_2]:
-            a, d = self.sym2_op(c)
+            a, d = self.sym3_op(c)
             a1_list.append(a); d1_list.append(d)
         
-        # Concat: (B, 4+4, T) -> (B, 8, T)
-        # Index: (0, 1, 2, 3, 1, 2, 3, 4) 
-        D1 = torch.cat(d1_list, dim=1) 
-        A1 = torch.cat(a1_list, dim=1) 
+        # A1, D1: (B, T, 6+6=12)
+        A1_t = torch.cat(a1_list, dim=2) 
+        D1_t = torch.cat(d1_list, dim=2) 
         
-        # --- Level-2 ---
-        A1_t = A1.transpose(1, 2) # (B, T, 8)
-        # C2_1: (0, 1, 2, 3) -> A1_t의 0~3
-        # C2_2: (2, 3, 1, 2) -> A1_t의 2, 3 (C1_1) + 4, 5 (C1_2)
-        # C2_3: (1, 2, 3, 4) -> A1_t의 4, 5, 6, 7 (C1_2)
-        c2_1 = A1_t[:, :, [0, 1, 2, 3]]           
-        c2_2 = A1_t[:, :, [2, 3, 0, 1]] 
-        c2_3 = A1_t[:, :, [1, 2, 3, 4]] 
+        # --- 2-Level DWT ---
+        # A1_t(D1_T): (1, 2, 3, 4, 5, 0, 0, 1, 2, 3, 4, 5) -> total 12
+        # c1 : (1, 2, 3, 4, 5, 0) -> Index [0, 1, 2, 3, 4, 5]
+        # c2 : (4, 5, 0, 0, 1, 2) -> Index [4, 5, 6, 7, 8, 9]
+        # c3 : (0, 1, 2, 3, 4, 5) -> Index [6, 7, 8, 9, 10, 11]
+        c2_1 = A1_t[:, :, [0, 1, 2, 3, 4, 5]]
+        c2_2 = A1_t[:, :, [4, 5, 6, 7, 8, 9]]
+        c2_3 = A1_t[:, :, [6, 7, 8, 9, 10, 11]]
         
         a2_list, d2_list = [], []
         for c in [c2_1, c2_2, c2_3]:
-            a, d = self.sym2_op(c)
+            a, d = self.sym3_op(c)
             a2_list.append(a); d2_list.append(d)
             
-        # Concat : (B, 4+4+4, T) -> (B, 12, T)
-        A2 = torch.cat(a2_list, dim=1) 
-        D2 = torch.cat(d2_list, dim=1) 
+        # A2, D2: (B, T, 6+6+6=18)
+        A2_t = torch.cat(a2_list, dim=2) 
+        D2_t = torch.cat(d2_list, dim=2) 
         
+        # --- Final Feature Fusion ---
+        D1 = D1_t.transpose(1, 2) # (B, 12, T)
+        A2 = A2_t.transpose(1, 2) # (B, 18, T)
+        D2 = D2_t.transpose(1, 2) # (B, 18, T)
+
         min_t = min(D1.size(-1), A2.size(-1), D2.size(-1))
-        D1 = D1[:, :, :min_t]
-        A2 = A2[:, :, :min_t]
-        D2 = D2[:, :, :min_t]
-        
-        feat = torch.cat([D1, A2, D2], dim=1) # (B, 32, T)
+        feat = torch.cat([D1[:, :, :min_t], A2[:, :, :min_t], D2[:, :, :min_t]], dim=1) 
         
         x_enc = self.encoder(feat)
-        stat = torch.cat([x_enc.mean(dim=-1), x_enc.std(dim=-1)], dim=1) # (B, 128)
-        out = self.classifier(stat) # (B, 2)
+        stat = torch.cat([x_enc.mean(dim=-1), x_enc.std(dim=-1)], dim=1) 
+        out = self.classifier(stat)
         
         return out
 #----------------------------------------------------------------------------------------------------
