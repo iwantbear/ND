@@ -566,7 +566,7 @@ class GatingRe2blocks(nn.Module):
 class WNN(nn.Module):
     def __init__(self, num_classes=2):
         super(WNN, self).__init__()
-        wavelet = pywt.Wavelet('sym3')
+        wavelet = pywt.Wavelet('coif1')
         dec_lo = torch.tensor(wavelet.dec_lo[::-1], dtype=torch.float32).view(1, 1, -1)
         dec_hi = torch.tensor(wavelet.dec_hi[::-1], dtype=torch.float32).view(1, 1, -1)
         self.register_buffer('filter_lo', dec_lo)
