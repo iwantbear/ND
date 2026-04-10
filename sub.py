@@ -21,7 +21,7 @@ from torch.utils.tensorboard import SummaryWriter
 from torchcontrib.optim import SWA
 
 from datautils import AudioTrainDataset, AudioTestDataset, genSpoof_list, AddWhiteNoise, VolumeChange, AddFade, WaveTimeStretch, PitchShift, CodecApply, AddEnvironmentalNoise, ResampleAugmentation, AddEchoes, TimeShift, TimeMask, FreqMask, AddZeroPadding
-from s_model import ConvLayers, SELayer, SERe2blocks, BiLSTM, BLDL, GraphAttentionLayer, STJGAT, Permute, AudioModel, SincConv_fast, TWNN, FWNN, FusionModel
+from s_model import ConvLayers, SELayer, SERe2blocks, BiLSTM, BLDL, GraphAttentionLayer, STJGAT, Permute, AudioModel, SincConv_fast, GatingRe2blocks, HT, WNN, FusionModel
 
 from evaluation.calculate_metrics import calculate_minDCF_EER_CLLR
 from evaluation.calculate_modules import * 
@@ -67,7 +67,7 @@ def main(args: argparse.Namespace) -> None:
     
     # define model related paths   
     selected_manipulation_key, selected_transform = augmentation(config)
-    model_tag = "WavLM(FTWNN)_{}_64600".format(selected_manipulation_key)
+    model_tag = "WavLM(V_1_F)_{}_64600_ht".format(selected_manipulation_key)
     if args.comment:
         model_tag = model_tag + "_{}".format(args.comment)
     model_tag = output_dir / model_tag
@@ -382,7 +382,6 @@ def produce_evaluation_file(
             
             fused_scores = (scores_stj + scores_bldl + scores_lfreq + scores_hfreq) / 4.0
             batch_score = fused_scores.data.cpu().numpy().ravel()
-            
         # add outputs
         fname_list.extend(utt_id)
         score_list.extend(batch_score.tolist())

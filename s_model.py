@@ -397,7 +397,7 @@ class SincConv_fast(nn.Module):
     def to_hz(mel):
         return 700 * (10 ** (mel / 2595) - 1)
 
-    def __init__(self, out_channels=80, kernel_size=251, sample_rate=16000, in_channels=1,
+    def __init__(self, out_channels=15, kernel_size=251, sample_rate=16000, in_channels=1,
                  stride=1, padding=0, dilation=1, bias=False, groups=1, min_low_hz=50, min_band_hz=50):
 
         super(SincConv_fast,self).__init__()
@@ -482,86 +482,126 @@ class SincConv_fast(nn.Module):
 
         filters = (band_pass).view(self.out_channels, 1, self.kernel_size)
 
-        out = F.conv1d(waveforms, filters, stride=self.stride,
+        low_filters = filters[0:10, :, :]
+        low_freq = F.conv1d(waveforms, low_filters, stride=self.stride,
                             padding=self.padding, dilation=self.dilation,
-                            bias=None, groups=1)
-        
-        return out
+                            bias=None, groups=1) # (B, 10, 64350)
+
+        high_filters = filters[10:15, :, :]
+        high_freq = F.conv1d(waveforms, high_filters, stride=self.stride,
+                             padding=self.padding, dilation=self.dilation,
+                             bias=None, groups=1) # (B, 5, 64350)
+
+        return low_freq, high_freq
 # --------------------------------------------------------------------------------------------------
-# V_1_T
-class TWNN(nn.Module):
-    def __init__(self, num_classes=2):
-        super().__init__()
-        self.encoder = nn.Sequential(
-            nn.Conv1d(320, 128, kernel_size=5, padding=4, dilation=2, bias=False),
-            nn.BatchNorm1d(128),
+# LF
+# Gating-Res2Net
+class GatingRe2blocks(nn.Module):
+    def __init__(self, out_channels=125, scale=5):
+        super(GatingRe2blocks, self).__init__()
+        self.scale = scale
+        self.width = out_channels // scale
+
+        self.conv1_list = nn.ModuleList([
+            nn.Conv1d(2, self.width, kernel_size=1) for _ in range(scale)
+        ])
+        self.conv3_list = nn.ModuleList([
+            nn.Conv1d(self.width, self.width, kernel_size=3, padding=1) for _ in range(scale - 1)
+        ])
+        self.gating_network = nn.Sequential(
+            nn.Linear(out_channels, out_channels // 4), 
             nn.ReLU(inplace=True),
-            nn.Conv1d(128, 64, kernel_size=5, padding=4, dilation=2, bias=False),
-            nn.BatchNorm1d(64),
-            nn.ReLU(inplace=True),
+            nn.Linear(out_channels // 4, scale),        
+            nn.Sigmoid()                                 
         )
-    
-        self.classifier = nn.Sequential(
-            nn.Linear(64 * 2, 64),
-            nn.ReLU(inplace=True),
-            nn.Dropout(0.3),
-            nn.Linear(64, num_classes)
-        )
+        self.identity_proj = nn.Conv1d(10, out_channels, kernel_size=1)
+        self.proj_final = nn.Conv1d(out_channels, out_channels, kernel_size=1)
+        self.bn_list = nn.ModuleList([nn.BatchNorm1d(self.width) for _ in range(scale)])
+        self.relu = nn.ReLU(inplace=True)
+        self.final_bn = nn.BatchNorm1d(out_channels)
+        self.gap = nn.AdaptiveAvgPool1d(1)              
+        self.ln = nn.LayerNorm(out_channels)         
+        self.fc1 = nn.Linear(out_channels, 64)          # 125 -> 64
+        self.leaky_relu = nn.LeakyReLU(0.2)             
+        self.dropout = nn.Dropout(p=0.3)                
+        self.fc2 = nn.Linear(64, 2)
 
-    def dwt_step_temporal(self, x):
-        if x.shape[-1] % 2 != 0:
-            x = F.pad(x, (0, 1), mode="reflect")
-            
-        x_odd = x[:, :, 0::2] 
-        x_even = x[:, :, 1::2] 
-        
-        a = (x_odd + x_even) / math.sqrt(2)
-        d = (x_odd - x_even) / math.sqrt(2)
-        
-        return a, d
-    
-    def norm(self, x):
-        mean = x.mean(dim=-1, keepdim=True)
-        std = x.std(dim=-1, keepdim=True, unbiased=False)
-        
-        return (x - mean) / (std + 1e-5)
 
-    def forward(self, x):
-        """
-        x: output of SincNet (B, 80, T)
-        """
-        # --- 1-Level T-DWT (T -> T/2) ---
-        A1, D1 = self.dwt_step_temporal(x)
-        
-        # --- 2-Level T-DWT (T/2 -> T/4) ---
-        A2, D2 = self.dwt_step_temporal(A1)
-        D1_a, D1_d = self.dwt_step_temporal(D1)
-        
-        A2 = self.norm(A2)
-        D2 = self.norm(D2)
-        D1_a = self.norm(D1_a)
-        D1_d = self.norm(D1_d)
-        
-        feat = torch.cat([A2, D2, D1_a, D1_d], dim=1) 
-        feat = self.norm(feat)
-        x_enc = self.encoder(feat) # (B, 64, T/4)
+    def forward(self, low_freq):
+        identity = self.identity_proj(low_freq)
+        low_grouped = torch.chunk(low_freq, self.scale, dim=1)
 
-        mean = x_enc.mean(dim=-1)
-        std = x_enc.std(dim=-1, unbiased=False)
-        stat = torch.cat([mean, std], dim=1) # (B, 128)
-        out = self.classifier(stat)
-        
+        y = [None] * self.scale
+        y[4] = self.relu(self.bn_list[4](self.conv1_list[4](low_grouped[4])))
+
+        for i in range(self.scale - 2, -1, -1):
+            x_i = self.conv1_list[i](low_grouped[i])
+            yi = self.conv3_list[i](x_i + y[i+1])
+            y[i] = self.relu(self.bn_list[i](yi))
+
+        # Gating
+        ms_feat = torch.cat(y, dim=1)
+        avg_pool = torch.mean(ms_feat, dim=-1)
+        gate_weights = self.gating_network(avg_pool) 
+
+        y_weighted = []
+        for i in range(self.scale):
+            w = gate_weights[:, i].view(-1, 1, 1)
+            y_weighted.append(y[i] * w)
+
+        ms_feat_gated = torch.cat(y_weighted, dim=1)
+        ms_feat_gated = self.proj_final(ms_feat_gated)   
+
+        out = self.relu(self.final_bn(ms_feat_gated + identity))  # (B, 125, 64350)
+        out_pooled = self.gap(out).squeeze(-1)          # (B, 125, 1) -> (B, 125)
+        out_normed = self.ln(out_pooled)                
+
+        x = self.fc1(out_normed)
+        x = self.leaky_relu(x)                          
+        x = self.dropout(x)
+        out = self.fc2(x)                      # (B, 2)
+
         return out
 # -------------------------------------------------------------------------------------
-# V_1_F 
-class FWNN(nn.Module):
+# V_1_F
+class HT(nn.Module):
+    def __init__(self, eps=1e-7):
+        super().__init__()
+        self.eps = eps
+
+    def forward(self, x):
+        B, C, T = x.shape
+
+        Xf = torch.fft.fft(x, dim=-1)
+
+        h = torch.zeros(T, device=x.device, dtype=x.dtype)
+        h[0] = 1.0
+        if T % 2 == 0:
+            h[1:T//2] = 2.0
+            h[T//2] = 1.0
+        else:
+            h[1:(T+1)//2] = 2.0
+
+        analytic = torch.fft.ifft(Xf * h.view(1, 1, T), dim=-1)
+
+        real = analytic.real
+        imag = analytic.imag
+        mag = torch.sqrt(real ** 2 + imag ** 2 + self.eps)
+
+        sin_phase = imag / mag
+        cos_phase = real / mag
+
+        return sin_phase, cos_phase
+
+class WNN(nn.Module):
     def __init__(self, num_classes=2):
         super().__init__()
+        self.ht = HT()
         self.encoder = nn.Sequential(
-            nn.Conv1d(120, 128, kernel_size=5, padding=4, dilation=2, bias=False),
-            nn.BatchNorm1d(128),
+            nn.Conv1d(30, 64, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm1d(64),
             nn.ReLU(inplace=True),
-            nn.Conv1d(128, 64, kernel_size=5, padding=4, dilation=2, bias=False),
+            nn.Conv1d(64, 64, kernel_size=3, padding=1, bias=False),
             nn.BatchNorm1d(64),
             nn.ReLU(inplace=True),
         )
@@ -572,37 +612,37 @@ class FWNN(nn.Module):
             nn.Linear(64, num_classes)
         )
 
-    def norm(self, x):
-        mean = x.mean(dim=-1, keepdim=True)
-        std = x.std(dim=-1, keepdim=True, unbiased=False)
-        return (x - mean) / (std + 1e-5)
+    def _fdwt_2level(self, x):
+        # Level 1
+        c1 = x[:, :-1, :]   # (B, 4, T)
+        c2 = x[:, 1:, :]    # (B, 4, T)
+        A1 = (c1 + c2) / (2 ** 0.5)
+        D1 = (c1 - c2) / (2 ** 0.5)
+
+        # Level 2
+        a1 = A1[:, :-1, :]  # (B, 3, T)
+        a2 = A1[:, 1:, :]   # (B, 3, T)
+        A2 = (a1 + a2) / (2 ** 0.5)
+        D2 = (a1 - a2) / (2 ** 0.5)
+
+        return torch.cat([D1, A2, D2], dim=1)  # (B, 10, T)
 
     def forward(self, x):
-        """
-        x: output of SincNet : (B, 80, T)
-        """
-        # --- 1-Level F-DWT ---
-        c1 = x[:, 0::2, :]  
-        c2 = x[:, 1::2, :]  
-        A1 = (c1 + c2) / math.sqrt(2)   
-        D1 = (c1 - c2) / math.sqrt(2)   
+        
+        feat = self._fdwt_2level(x)              # (B, 10, T)
+        sin_phase, cos_phase = self.ht(feat)     # (B, 10, T) x2
+        x_norm = feat / (feat.std(dim=-1, keepdim=True) + 1e-6)
+        combined = torch.cat([x_norm, sin_phase, cos_phase], dim=1)  # (B, 30, T)
 
-        # --- 2-Level F-DWT ---
-        a1_1 = A1[:, 0::2, :]  
-        a1_2 = A1[:, 1::2, :]  
-        A2 = (a1_1 + a1_2) / math.sqrt(2) 
-        D2 = (a1_1 - a1_2) / math.sqrt(2)   
 
-        feat = torch.cat([A1, D1, A2, D2], dim=1)  # (B, 120, T)
-        feat = self.norm(feat)
-        x_enc = self.encoder(feat)  
-
-        mean = x_enc.mean(dim=-1)
-        std = x_enc.std(dim=-1, unbiased=False)
-        stat = torch.cat([mean, std], dim=1)  # (B, 128)
-
+        h = self.encoder(combined)               # (B, 64, T)
+        mean = h.mean(dim=-1)
+        std  = h.std(dim=-1)
+        stat = torch.cat([mean, std], dim=1)     # (B, 128)
         out = self.classifier(stat)
-        return out
+        
+        return out                                # (B, 2)
+
 #----------------------------------------------------------------------------------------------------
 # Model
 class Permute(nn.Module):
@@ -664,9 +704,9 @@ class FusionModel(nn.Module):
         super().__init__()
         self.wavlm_model = WavLMModel.from_pretrained("microsoft/wavlm-large").to(device)
         self.time_model = AudioModel().to(device)
-        self.sinc_layer = SincConv_fast(out_channels=80).to(device) 
-        self.low_branch = TWNN().to(device)              
-        self.high_branch = FWNN().to(device)
+        self.sinc_layer = SincConv_fast(out_channels=15).to(device) 
+        self.low_branch = GatingRe2blocks().to(device)              
+        self.high_branch = WNN().to(device)
 
         for param in self.wavlm_model.parameters():
             param.requires_grad = False
@@ -675,9 +715,9 @@ class FusionModel(nn.Module):
         wavlm_features = self.wavlm_model(audio_input).last_hidden_state
         out_stj, out_bldl = self.time_model(wavlm_features)
         raw_audio = audio_input.unsqueeze(1) if audio_input.dim() == 2 else audio_input
-        
-        sinc_features = self.sinc_layer(raw_audio)
-        out_low = self.low_branch(sinc_features)
-        out_high = self.high_branch(sinc_features)
-        
+
+        low_freq, high_freq = self.sinc_layer(raw_audio)
+        out_low = self.low_branch(low_freq)
+        out_high = self.high_branch(high_freq)
+
         return out_stj, out_bldl, out_low, out_high
