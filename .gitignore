@@ -1,3 +1,5 @@
 Dataset/
+Dataset/AASIST.conf
+Dataset/AASIST.pth
 nohup.out
 exp_result
