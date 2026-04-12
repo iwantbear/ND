@@ -21,7 +21,7 @@ from torch.utils.tensorboard import SummaryWriter
 from torchcontrib.optim import SWA
 
 from datautils import AudioTrainDataset, AudioTestDataset, genSpoof_list, AddWhiteNoise, VolumeChange, AddFade, WaveTimeStretch, PitchShift, CodecApply, AddEnvironmentalNoise, ResampleAugmentation, AddEchoes, TimeShift, TimeMask, FreqMask, AddZeroPadding
-from s_model import ConvLayers, SELayer, SERe2blocks, BiLSTM, BLDL, GraphAttentionLayer, STJGAT, Permute, AudioModel, SincConv_fast, GatingRe2blocks, HT, WNN, FusionModel
+from s_model import ConvLayers, SELayer, SERe2blocks, BiLSTM, BLDL, GraphAttentionLayer, STJGAT, Permute, AudioModel, SincConv_fast, GatingRe2blocks, WNN, FusionModel
 
 from evaluation.calculate_metrics import calculate_minDCF_EER_CLLR
 from evaluation.calculate_modules import * 
@@ -67,7 +67,7 @@ def main(args: argparse.Namespace) -> None:
     
     # define model related paths   
     selected_manipulation_key, selected_transform = augmentation(config)
-    model_tag = "WavLM(V_1_F)_{}_64600_ht".format(selected_manipulation_key)
+    model_tag = "WavLM(V_1_F)_{}_64600_da".format(selected_manipulation_key)
     if args.comment:
         model_tag = model_tag + "_{}".format(args.comment)
     model_tag = output_dir / model_tag
@@ -196,7 +196,8 @@ def get_loader(
         list_IDs=file_train,
         labels=d_label_trn,
         base_dir=audio_trn_database_path,
-        cut=cut
+        cut=cut,
+        add_noise=True
     )
 
     gen = torch.Generator()
