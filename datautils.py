@@ -16,6 +16,8 @@ import torchaudio
 from torchvision import transforms
 from scipy import signal
 
+from data_aug import Musan, RIR
+
 import torch
 import torch.nn as nn
 from torch import Tensor
@@ -416,7 +418,7 @@ class AddZeroPadding(nn.Module):
 #-----------------------------------------------------------------------------------------------
 # New AudioTrainDataset (add MUSAN, RIR)
 class AudioTrainDataset(Dataset):
-    def __init__(self, list_IDs, labels, base_dir, cut=64600, add_noise=True:
+    def __init__(self, list_IDs, labels, base_dir, cut=64600, add_noise=True):
         self.list_IDs = list_IDs
         self.labels = labels
         self.base_dir = base_dir
@@ -425,9 +427,9 @@ class AudioTrainDataset(Dataset):
 
         if self.add_noise:
             self.DA = {}
-            self.DA['MUS'] = Musan('musan_data')
+            self.DA['MUS'] = Musan('./Dataset/musan')
             self.category = ['noise', 'speech', 'music']
-            self.DA['RIR'] = RIR('RIR_data')
+            self.DA['RIR'] = RIR('./Dataset/RIR')
 
     def __len__(self):
         return len(self.list_IDs)
