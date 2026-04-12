@@ -25,13 +25,16 @@ class RIR:
         path = random.sample(self.files, 1)[0]
         
         rir, _ = sf.read(path)
-        rir = rir.astype(np.float)
+        rir = rir.astype(float)
+        
+        if rir.ndim > 1:
+            rir = rir[:, 0]
+            
         rir = np.expand_dims(rir, 0)
         rir = rir / np.sqrt(np.sum(rir**2))
         
         x = np.expand_dims(x, 0)
         x = signal.convolve(x, rir, mode='full')[:,:len(x[0])]
-
         x = np.squeeze(x, 0)
 
         return x
@@ -57,18 +60,13 @@ class Musan:
             self.num_noise_file[category] = 0
 
         # init noise list
-        for root, _, files in os.walk(path):
-            if self.Category[0] in root:
-                category = self.Category[0]
-            elif self.Category[1] in root:
-                category = self.Category[1]
-            elif self.Category[2] in root:
-                category = self.Category[2]
-
-            for file in files:
-                if '.wav' in file:
-                    self.noise_list[category].append(os.path.join(root, file))
-                    self.num_noise_file[category] += 1
+        for category in self.Category:
+            category_path = os.path.join(path, category)
+            for root, _, files in os.walk(category_path):
+                for file in files:
+                    if '.wav' in file:
+                        self.noise_list[category].append(os.path.join(root, file))
+                        self.num_noise_file[category] += 1
 
     def __call__(self, x, category):
         # calculate dB
