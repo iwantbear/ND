@@ -564,44 +564,14 @@ class GatingRe2blocks(nn.Module):
         return out
 # -------------------------------------------------------------------------------------
 # V_1_F
-class HT(nn.Module):
-    def __init__(self, eps=1e-7):
-        super().__init__()
-        self.eps = eps
-
-    def forward(self, x):
-        B, C, T = x.shape
-
-        Xf = torch.fft.fft(x, dim=-1)
-
-        h = torch.zeros(T, device=x.device, dtype=x.dtype)
-        h[0] = 1.0
-        if T % 2 == 0:
-            h[1:T//2] = 2.0
-            h[T//2] = 1.0
-        else:
-            h[1:(T+1)//2] = 2.0
-
-        analytic = torch.fft.ifft(Xf * h.view(1, 1, T), dim=-1)
-
-        real = analytic.real
-        imag = analytic.imag
-        mag = torch.sqrt(real ** 2 + imag ** 2 + self.eps)
-
-        sin_phase = imag / mag
-        cos_phase = real / mag
-
-        return sin_phase, cos_phase
-
 class WNN(nn.Module):
     def __init__(self, num_classes=2):
         super().__init__()
-        self.ht = HT()
         self.encoder = nn.Sequential(
-            nn.Conv1d(30, 64, kernel_size=3, padding=1, bias=False),
-            nn.BatchNorm1d(64),
+            nn.Conv1d(10, 32, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm1d(32),
             nn.ReLU(inplace=True),
-            nn.Conv1d(64, 64, kernel_size=3, padding=1, bias=False),
+            nn.Conv1d(32, 64, kernel_size=3, padding=1, bias=False),
             nn.BatchNorm1d(64),
             nn.ReLU(inplace=True),
         )
@@ -612,37 +582,31 @@ class WNN(nn.Module):
             nn.Linear(64, num_classes)
         )
 
-    def _fdwt_2level(self, x):
-        # Level 1
-        c1 = x[:, :-1, :]   # (B, 4, T)
-        c2 = x[:, 1:, :]    # (B, 4, T)
-        A1 = (c1 + c2) / (2 ** 0.5)
-        D1 = (c1 - c2) / (2 ** 0.5)
-
-        # Level 2
-        a1 = A1[:, :-1, :]  # (B, 3, T)
-        a2 = A1[:, 1:, :]   # (B, 3, T)
-        A2 = (a1 + a2) / (2 ** 0.5)
-        D2 = (a1 - a2) / (2 ** 0.5)
-
-        return torch.cat([D1, A2, D2], dim=1)  # (B, 10, T)
-
     def forward(self, x):
-        
-        feat = self._fdwt_2level(x)              # (B, 10, T)
-        sin_phase, cos_phase = self.ht(feat)     # (B, 10, T) x2
-        x_norm = feat / (feat.std(dim=-1, keepdim=True) + 1e-6)
-        combined = torch.cat([x_norm, sin_phase, cos_phase], dim=1)  # (B, 30, T)
+        """
+        x: (B, 5, T)  
+        """
+        # 1-Level F-DWT 
+        c1 = x[:, 0:4, :]   # (c1,c2,c3,c4)
+        c2 = x[:, 1:5, :]   # (c2,c3,c4,c5)
+        A1 = (c1 + c2) / (2**0.5)   # (B,4,T)
+        D1 = (c1 - c2) / (2**0.5)   # (B,4,T)
 
+        # 2-Level F-DWT
+        a1_1 = A1[:, 0:3, :]   # (A1_1,A1_2,A1_3)
+        a1_2 = A1[:, 1:4, :]   # (A1_2,A1_3,A1_4)
+        A2 = (a1_1 + a1_2) / (2**0.5)   # (B,3,T)
+        D2 = (a1_1 - a1_2) / (2**0.5)   # (B,3,T)
 
-        h = self.encoder(combined)               # (B, 64, T)
-        mean = h.mean(dim=-1)
-        std  = h.std(dim=-1)
-        stat = torch.cat([mean, std], dim=1)     # (B, 128)
+        feat = torch.cat([D1, A2, D2], dim=1)  # (B,10,T)
+        x = self.encoder(feat)  # (B,64,T)
+
+        mean = x.mean(dim=-1)
+        std = x.std(dim=-1)
+        stat = torch.cat([mean, std], dim=1)  # (B,128)
+
         out = self.classifier(stat)
-        
-        return out                                # (B, 2)
-
+        return out
 #----------------------------------------------------------------------------------------------------
 # Model
 class Permute(nn.Module):
