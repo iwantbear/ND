@@ -38,19 +38,16 @@ class RIR:
     
 class Musan:
     Category = ['noise','speech','music']
-    
     SNR = {
         'noise': (0, 15),
         'speech': (13, 20),
         'music': (5, 25)
     }
-    
     NumFile = {
         'noise': (1, 1),
         'speech': (3, 8),
         'music': (1, 1)
     }
-    
     def __init__(self, path):
         # set vars
         self.noise_list = {}
@@ -103,7 +100,6 @@ class Musan:
             else:
                 index = random.randint(0, wav_size - x_size - 1)
                 noise, _ = sf.read(f, start=index, stop=index + x_size)
-
             noises.append(noise)
         
         # noise injection
