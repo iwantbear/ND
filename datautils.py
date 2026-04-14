@@ -441,11 +441,8 @@ class AudioTrainDataset(Dataset):
         # MUSAN / RIR augmentation (before padding/truncation)
         if self.add_noise:
             if 0.5 > random.random():
-                if random.randint(0, 1) == 0:
-                    category = random.choice(self.category)
-                    X = self.DA['MUS'](X, category)
-                else:
-                    X = self.DA['RIR'](X)
+                category = random.choice(self.category)
+                X = self.DA['MUS'](X, category)
 
         # Padding or truncation (original method)
         if X.shape[-1] < self.cut:

@@ -67,7 +67,7 @@ def main(args: argparse.Namespace) -> None:
     
     # define model related paths   
     selected_manipulation_key, selected_transform = augmentation(config)
-    model_tag = "WavLM(V_1_F)_{}_64600_da".format(selected_manipulation_key)
+    model_tag = "WavLM(V_1_F)_{}_64600_mu".format(selected_manipulation_key)
     if args.comment:
         model_tag = model_tag + "_{}".format(args.comment)
     model_tag = output_dir / model_tag
@@ -381,7 +381,7 @@ def produce_evaluation_file(
             scores_lfreq = out_lfreq[:, 1]
             scores_hfreq = out_hfreq[:, 1]
             
-            fused_scores = (scores_stj + scores_bldl + scores_lfreq + scores_hfreq) / 4.0
+            fused_scores = 0.4 * scores_stj + 0.4 * scores_bldl + 0.1 * scores_lfreq + 0.1 * scores_hfreq
             batch_score = fused_scores.data.cpu().numpy().ravel()
         # add outputs
         fname_list.extend(utt_id)
