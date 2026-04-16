@@ -416,20 +416,12 @@ class AddZeroPadding(nn.Module):
             
         return self.add_zero_padding(audio, left_len, right_len)
 #-----------------------------------------------------------------------------------------------
-# New AudioTrainDataset (add MUSAN, RIR)
 class AudioTrainDataset(Dataset):
-    def __init__(self, list_IDs, labels, base_dir, cut=64600, add_noise=True):
+    def __init__(self, list_IDs, labels, base_dir, cut=64600):
         self.list_IDs = list_IDs
         self.labels = labels
         self.base_dir = base_dir
         self.cut = cut
-        self.add_noise = add_noise
-
-        if self.add_noise:
-            self.DA = {}
-            self.DA['MUS'] = Musan('./Dataset/musan')
-            self.category = ['noise', 'speech', 'music']
-            self.DA['RIR'] = RIR('./Dataset/RIR')
 
     def __len__(self):
         return len(self.list_IDs)
@@ -438,12 +430,6 @@ class AudioTrainDataset(Dataset):
         key = self.list_IDs[index]
         X, _ = sf.read(str(self.base_dir / f"{key}.flac"))
 
-        # MUSAN / RIR augmentation (before padding/truncation)
-        if self.add_noise:
-            if 0.5 > random.random():
-                X = self.DA['RIR'](X)
-
-        # Padding or truncation (original method)
         if X.shape[-1] < self.cut:
             X = np.tile(X, int(self.cut / X.shape[-1]) + 1)[:self.cut]
         elif X.shape[-1] > self.cut:
@@ -451,7 +437,6 @@ class AudioTrainDataset(Dataset):
 
         x_inp = Tensor(X)
         y = self.labels[key]
-        
         return x_inp, y
 
 class AudioTestDataset(Dataset):
