@@ -16,6 +16,7 @@ from typing import Dict, List, Union
 import torch
 import torchaudio
 import torch.nn as nn
+import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from torchcontrib.optim import SWA
@@ -67,7 +68,7 @@ def main(args: argparse.Namespace) -> None:
     
     # define model related paths   
     selected_manipulation_key, selected_transform = augmentation(config)
-    model_tag = "WavLM(V_1_F)_{}_64600_rir".format(selected_manipulation_key)
+    model_tag = "WavLM(V_1_F)_{}_64600_fl".format(selected_manipulation_key)
     if args.comment:
         model_tag = model_tag + "_{}".format(args.comment)
     model_tag = output_dir / model_tag
@@ -196,8 +197,7 @@ def get_loader(
         list_IDs=file_train,
         labels=d_label_trn,
         base_dir=audio_trn_database_path,
-        cut=cut,
-        add_noise=True
+        cut=cut
     )
 
     gen = torch.Generator()
@@ -396,6 +396,21 @@ def produce_evaluation_file(
     print("Scores saved to {}".format(save_path))
 #-----------------------------------------------------------------------------------------------
 # Train
+class FocalLoss(nn.Module):
+    def __init__(self, weight=None, gamma=2.0, reduction='mean'):
+        super().__init__()
+        self.weight = weight
+        self.gamma = gamma
+        self.reduction = reduction
+
+    def forward(self, inputs, targets):
+        ce_loss = F.cross_entropy(inputs, targets, weight=self.weight, reduction='none')
+        pt = torch.exp(-ce_loss)
+        focal_loss = ((1 - pt) ** self.gamma) * ce_loss
+        if self.reduction == 'mean':
+            return focal_loss.mean()
+        return focal_loss.sum()
+
 def train_epoch(
     trn_loader: DataLoader,
     model,
@@ -410,7 +425,7 @@ def train_epoch(
 
     # set objective (Loss) functions
     weight = torch.FloatTensor([0.1, 0.9]).to(device)
-    criterion = nn.CrossEntropyLoss(weight=weight)
+    criterion = FocalLoss(weight=weight, gamma=2.0)
     
     for X_audio, y in tqdm(trn_loader):
         batch_size = X_audio.size(0)
