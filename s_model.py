@@ -98,6 +98,7 @@ class SERe2blocks(nn.Module):
         self.width = conv_channels // scale
 
         self.conv1 = nn.Conv2d(input_dim, conv_channels, kernel_size=1, bias=False)  
+        self.conv1_out = nn.Conv2d(conv_channels, input_dim, kernel_size=1, bias=False)
         self.bn1   = nn.BatchNorm2d(conv_channels)
         self.relu  = nn.ReLU(inplace=True)
         self.conv3 = nn.ModuleList([
@@ -122,7 +123,7 @@ class SERe2blocks(nn.Module):
             y.append(yi)
 
         out = torch.cat(y, dim=1)
-        out = self.conv1(out)
+        out = self.conv1_out(out)
         out = self.bn3(out)
         out = self.relu(out)
         out = self.se(out)
