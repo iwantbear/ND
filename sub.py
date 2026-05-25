@@ -67,7 +67,7 @@ def main(args: argparse.Namespace) -> None:
     
     # define model related paths   
     selected_manipulation_key, selected_transform = augmentation(config)
-    model_tag = "WavLM(V_1_F)_{}_64600_swa".format(selected_manipulation_key)
+    model_tag = "WavLM(V_1_F)_{}_64600_labelsmooth".format(selected_manipulation_key)
     if args.comment:
         model_tag = model_tag + "_{}".format(args.comment)
     model_tag = output_dir / model_tag
@@ -157,22 +157,6 @@ def main(args: argparse.Namespace) -> None:
         writer.add_scalar("best_dev_dcf", best_dev_dcf, epoch)
         writer.add_scalar("best_dev_cllr", best_dev_cllr, epoch)
         writer.flush()
-        
-    if n_swa_update > 0:
-        optimizer_swa.swap_swa_sgd()
-        optimizer_swa.bn_update(trn_loader, model, device)
-        
-        swa_score_file = metric_path / "dev_score_swa.txt"
-        produce_evaluation_file(dev_loader, model, device, swa_score_file, dev_trial_path)
-        swa_eer, swa_dcf, swa_cllr = calculate_minDCF_EER_CLLR(
-            cm_scores_file=swa_score_file,
-            output_file=metric_path / "dev_DCF_EER_swa.txt",
-            printout=False)
-        print("SWA result - dev_eer: {:.3f}, dev_dcf:{:.5f}, dev_cllr:{:.5f}".format(
-            swa_eer, swa_dcf, swa_cllr))
-        
-        torch.save(model.state_dict(), model_save_path / "swa_model.pth")
-        print("SWA model saved")
     writer.close() 
 #-----------------------------------------------------------------------------------------------
 # Model
@@ -425,7 +409,7 @@ def train_epoch(
 
     # set objective (Loss) functions
     weight = torch.FloatTensor([0.1, 0.9]).to(device)
-    criterion = nn.CrossEntropyLoss(weight=weight)
+    criterion = nn.CrossEntropyLoss(weight=weight, label_smoothing=0.05)
     
     for X_audio, y in tqdm(trn_loader):
         batch_size = X_audio.size(0)
