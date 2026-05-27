@@ -453,12 +453,13 @@ class AudioTrainDataset(Dataset):
                 if random.randint(0, 1) == 0:
                     category = random.choice(self.category)
                     X_aug = self.DA['MUS'](X_aug, category)
-                    print(f"[AUG] {key} -> MUSAN ({category})")
+                    # print(f"[AUG] {key} -> MUSAN ({category})")
                 else:
                     X_aug = self.DA['RIR'](X_aug)
-                    print(f"[AUG] {key} -> RIR")
+                    # print(f"[AUG] {key} -> RIR")
             else:
-                print(f"[NO AUG] {key} -> Original")
+                pass
+                # print(f"[NO AUG] {key} -> Original")
             x_aug = Tensor(X_aug)
         else:
             x_aug = x_orig.clone()

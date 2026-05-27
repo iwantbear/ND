@@ -19,15 +19,19 @@ class RIR:
         
         rir, _ = sf.read(path)
         rir = rir.astype(np.float64)
-        rir = np.expand_dims(rir, 0)
-        rir = rir / np.sqrt(np.sum(rir**2))
         
-        x = np.expand_dims(x, 0)
-        x = signal.convolve(x, rir, mode='full')[:,:len(x[0])]
-
-        x = np.squeeze(x, 0)
-
+        # 스테레오면 첫 번째 채널만 사용
+        if rir.ndim > 1:
+            rir = rir[:, 0]
+        
+        rir = rir / np.sqrt(np.sum(rir ** 2))
+        
+        orig_len = len(x)
+        x = signal.fftconvolve(x, rir, mode='full')[:orig_len]
+        
         return x
+
+
 
 class Musan:
     Category = ['noise','speech','music']
