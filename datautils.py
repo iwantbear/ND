@@ -16,7 +16,7 @@ import torchaudio
 from torchvision import transforms
 from scipy import signal
 
-from data_aug import Musan, RIR
+from da import RIR, Musan
 
 import torch
 import torch.nn as nn
@@ -417,11 +417,18 @@ class AddZeroPadding(nn.Module):
         return self.add_zero_padding(audio, left_len, right_len)
 #-----------------------------------------------------------------------------------------------
 class AudioTrainDataset(Dataset):
-    def __init__(self, list_IDs, labels, base_dir, cut=64600):
+    def __init__(self, list_IDs, labels, base_dir, cut=64600, add_noise=True):
         self.list_IDs = list_IDs
         self.labels = labels
         self.base_dir = base_dir
         self.cut = cut
+        self.add_noise = add_noise
+
+        if self.add_noise:
+            self.DA = {}
+            self.DA['MUS'] = Musan('./Dataset/musan')
+            self.category = ['noise', 'speech', 'music']
+            self.DA['RIR'] = RIR('./Dataset/rir')
 
     def __len__(self):
         return len(self.list_IDs)
@@ -430,14 +437,34 @@ class AudioTrainDataset(Dataset):
         key = self.list_IDs[index]
         X, _ = sf.read(str(self.base_dir / f"{key}.flac"))
 
+        # Padding or truncation
         if X.shape[-1] < self.cut:
             X = np.tile(X, int(self.cut / X.shape[-1]) + 1)[:self.cut]
         elif X.shape[-1] > self.cut:
             X = X[:self.cut]
 
-        x_inp = Tensor(X)
+        # 원본 (SincNet용)
+        x_orig = Tensor(X.copy())
+
+        # augmented (WavLM용)
+        if self.add_noise:
+            X_aug = X.copy()
+            if 0.5 > random.random():
+                if random.randint(0, 1) == 0:
+                    category = random.choice(self.category)
+                    X_aug = self.DA['MUS'](X_aug, category)
+                    print(f"[AUG] {key} -> MUSAN ({category})")
+                else:
+                    X_aug = self.DA['RIR'](X_aug)
+                    print(f"[AUG] {key} -> RIR")
+            else:
+                print(f"[NO AUG] {key} -> Original")
+            x_aug = Tensor(X_aug)
+        else:
+            x_aug = x_orig.clone()
+
         y = self.labels[key]
-        return x_inp, y
+        return x_aug, x_orig, y
 
 class AudioTestDataset(Dataset):
     def __init__(self, list_IDs, base_dir, cut=64600):

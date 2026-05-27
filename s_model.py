@@ -676,11 +676,17 @@ class FusionModel(nn.Module):
         for param in self.wavlm_model.parameters():
             param.requires_grad = False
 
-    def forward(self, audio_input):
-        wavlm_features = self.wavlm_model(audio_input).last_hidden_state
-        out_stj, out_bldl = self.time_model(wavlm_features)
-        raw_audio = audio_input.unsqueeze(1) if audio_input.dim() == 2 else audio_input
+    def forward(self, x_aug, x_orig=None):
+        # 추론(eval) 시에는 x_orig가 없으므로 동일하게 처리
+        if x_orig is None:
+            x_orig = x_aug
 
+        # WavLM 브랜치 (augmented 오디오)
+        wavlm_features = self.wavlm_model(x_aug).last_hidden_state
+        out_stj, out_bldl = self.time_model(wavlm_features)
+
+        # SincNet 브랜치 (원본 오디오)
+        raw_audio = x_orig.unsqueeze(1) if x_orig.dim() == 2 else x_orig
         low_freq, high_freq = self.sinc_layer(raw_audio)
         out_low = self.low_branch(low_freq)
         out_high = self.high_branch(high_freq)
