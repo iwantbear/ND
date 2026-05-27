@@ -410,7 +410,7 @@ def train_epoch(
 
     # set objective (Loss) functions
     weight = torch.FloatTensor([0.1, 0.9]).to(device)
-    criterion = nn.CrossEntropyLoss(weight=weight, label_smoothing=0.05)
+    criterion = nn.CrossEntropyLoss(weight=weight)
     
     for X_aug, X_orig, y in tqdm(trn_loader):  # 3개 언패킹
         batch_size = X_aug.size(0)
@@ -443,7 +443,6 @@ def train_epoch(
 
     running_loss /= num_total
     return running_loss
-
 #-----------------------------------------------------------------------------------------------
 # Parser
 if __name__ == "__main__":
