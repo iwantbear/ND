@@ -67,7 +67,7 @@ def main(args: argparse.Namespace) -> None:
     
     # define model related paths   
     selected_manipulation_key, selected_transform = augmentation(config)
-    model_tag = "WavLM(V_1_F)_{}_64600_da".format(selected_manipulation_key)
+    model_tag = "WavLM(V_1_F)_{}_64600_lws".format(selected_manipulation_key)
     if args.comment:
         model_tag = model_tag + "_{}".format(args.comment)
     model_tag = output_dir / model_tag
@@ -196,8 +196,7 @@ def get_loader(
         list_IDs=file_train,
         labels=d_label_trn,
         base_dir=audio_trn_database_path,
-        cut=cut,
-        add_noise=True
+        cut=cut
     )
 
     gen = torch.Generator()
@@ -411,16 +410,31 @@ def train_epoch(
     # set objective (Loss) functions
     weight = torch.FloatTensor([0.1, 0.9]).to(device)
     criterion = nn.CrossEntropyLoss(weight=weight)
-    
-    for X_aug, X_orig, y in tqdm(trn_loader):  # 3개 언패킹
-        batch_size = X_aug.size(0)
+
+    for X_audio, y in tqdm(trn_loader):
+        batch_size = X_audio.size(0)
         num_total += batch_size
-        
-        X_aug = X_aug.to(device)    # WavLM용 (augmented)
-        X_orig = X_orig.to(device)  # SincNet용 (원본)
+
+        selected_transform = augmentation(config)
+        X_audio, y = preprocessing(
+            is_train=True,
+            X_audio=X_audio,
+            y=y,
+            model=None,
+            encoder=None,
+            criterion=None,
+            optimizer=None,
+            config=config,
+            device=device,
+            cut_length=64600,
+            selected_transform=selected_transform,
+            augmentations_on_cpu=None
+        )
+
+        X_audio = X_audio.to(device)
         y = y.view(-1).type(torch.int64).to(device)
-        
-        out_stj, out_bldl, out_lfreq, out_hfreq = model(X_aug, X_orig)  # 2개 입력
+
+        out_stj, out_bldl, out_lfreq, out_hfreq = model(X_audio)
 
         loss_stj = criterion(out_stj, y)
         loss_bldl = criterion(out_bldl, y)
@@ -429,7 +443,7 @@ def train_epoch(
 
         loss = 0.25 * (loss_stj + loss_bldl + loss_lfreq + loss_hfreq)
         running_loss += loss.item() * batch_size
-        
+
         optim.zero_grad()
         loss.backward()
         optim.step()

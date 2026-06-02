@@ -668,25 +668,30 @@ class FusionModel(nn.Module):
     def __init__(self, device):
         super().__init__()
         self.wavlm_model = WavLMModel.from_pretrained("microsoft/wavlm-large").to(device)
+        
+        # Layer Weighted Sum
+        num_layers = 25  # 1 CNN output + 24 Transformer layers
+        self.layer_weights = nn.Parameter(torch.ones(num_layers) / num_layers)
+
         self.time_model = AudioModel().to(device)
-        self.sinc_layer = SincConv_fast(out_channels=15).to(device) 
-        self.low_branch = GatingRe2blocks().to(device)              
+        self.sinc_layer = SincConv_fast(out_channels=15).to(device)
+        self.low_branch = GatingRe2blocks().to(device)
         self.high_branch = WNN().to(device)
 
         for param in self.wavlm_model.parameters():
             param.requires_grad = False
 
-    def forward(self, x_aug, x_orig=None):
-        # 추론(eval) 시에는 x_orig가 없으므로 동일하게 처리
-        if x_orig is None:
-            x_orig = x_aug
-
-        # WavLM 브랜치 (augmented 오디오)
-        wavlm_features = self.wavlm_model(x_aug).last_hidden_state
+    def forward(self, audio_input):
+        wavlm_out = self.wavlm_model(audio_input, output_hidden_states=True)
+        hidden_states = wavlm_out.hidden_states  # tuple of (num_layers, B, T, 1024)
+        
+        # Learnable weighted sum
+        stacked = torch.stack(hidden_states, dim=0)  # (25, B, T, 1024)
+        weights = F.softmax(self.layer_weights, dim=0).to(stacked.device)  # (25,)
+        wavlm_features = torch.sum(stacked * weights.view(-1, 1, 1, 1), dim=0)  # (B, T, 1024)
+        
         out_stj, out_bldl = self.time_model(wavlm_features)
-
-        # SincNet 브랜치 (원본 오디오)
-        raw_audio = x_orig.unsqueeze(1) if x_orig.dim() == 2 else x_orig
+        raw_audio = audio_input.unsqueeze(1) if audio_input.dim() == 2 else audio_input
         low_freq, high_freq = self.sinc_layer(raw_audio)
         out_low = self.low_branch(low_freq)
         out_high = self.high_branch(high_freq)
