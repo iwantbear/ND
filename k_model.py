@@ -89,9 +89,12 @@ class SERe2blocks(nn.Module):
         self.scale = scale
         self.width = conv_channels // scale
 
-        self.conv1 = nn.Conv2d(input_dim, conv_channels, kernel_size=1, bias=False)  
+        # First 1x1 conv: input_dim → conv_channels
+        self.conv1 = nn.Conv2d(input_dim, conv_channels, kernel_size=1, bias=False)
         self.bn1   = nn.BatchNorm2d(conv_channels)
         self.relu  = nn.ReLU(inplace=True)
+
+        # 3x3 conv: 
         self.conv3 = nn.ModuleList([
             nn.Sequential(
                 nn.Conv2d(self.width, self.width, 3, padding=1, bias=False),
@@ -99,14 +102,19 @@ class SERe2blocks(nn.Module):
                 nn.ReLU(inplace=True)
             ) for _ in range(scale - 1)
         ])
-        self.bn3   = nn.BatchNorm2d(input_dim)
-        self.se    = SELayer(num_channels=input_dim, reduction_ratio=reduction_ratio)
+
+        # Last 1x1 conv: conv_channels → input_dim 
+        self.conv_out = nn.Conv2d(conv_channels, input_dim, kernel_size=1, bias=False)
+        self.bn3      = nn.BatchNorm2d(input_dim)
+        self.se       = SELayer(num_channels=input_dim, reduction_ratio=reduction_ratio)
 
     def forward(self, x):
-        x = x.permute(0,3,1,2)
+        x = x.permute(0, 3, 1, 2)   # (B, T, F, C) → (B, C, T, F)
+
         out = self.conv1(x)
         out = self.bn1(out)
 
+        # Res2Net's 3x3 conv
         spl = torch.chunk(out, self.scale, dim=1)
         y = [spl[0]]
         for i in range(1, self.scale):
@@ -114,11 +122,14 @@ class SERe2blocks(nn.Module):
             y.append(yi)
 
         out = torch.cat(y, dim=1)
-        out = self.conv1(out)
+        # Last 1x1 conv 
+        out = self.conv_out(out)
         out = self.bn3(out)
         out = self.relu(out)
         out = self.se(out)
-        out = out.permute(0,2,3,1)    # (B, T, 256, 32)
+
+        out = out.permute(0, 2, 3, 1)   # (B, C, T, F) → (B, T, F, C)
+        
         return out
 #----------------------------------------------------------------------------------------------------
 # BLDL
