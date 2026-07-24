@@ -67,7 +67,7 @@ def main(args: argparse.Namespace) -> None:
     
     # define model related paths   
     selected_manipulation_key, selected_transform = augmentation(config)
-    model_tag = "WavLM(V_1_F)_{}_64600_lws".format(selected_manipulation_key)
+    model_tag = "WavLM(V_1_F)_{}_64600_sota".format(selected_manipulation_key)
     if args.comment:
         model_tag = model_tag + "_{}".format(args.comment)
     model_tag = output_dir / model_tag
@@ -104,7 +104,7 @@ def main(args: argparse.Namespace) -> None:
 
         eval_dcf, eval_eer, eval_cllr = calculate_minDCF_EER_CLLR(
             cm_scores_file=eval_score_path,
-            output_file=model_tag/"loaded_model_result.txt")
+            output_file=model_tag/"loaded_model_result_351812.txt")
         print("DONE. eval_eer: {:.3f}, eval_dcf:{:.5f} , eval_cllr:{:.5f}".format(eval_eer, eval_dcf, eval_cllr))
         sys.exit(0)
 
@@ -380,7 +380,7 @@ def produce_evaluation_file(
             scores_lfreq = out_lfreq[:, 1]
             scores_hfreq = out_hfreq[:, 1]
             
-            fused_scores = 0.4 * scores_stj + 0.4 * scores_bldl + 0.1 * scores_lfreq + 0.1 * scores_hfreq
+            fused_scores = 0.4 * scores_stj + 0.5 * scores_bldl + 0.03 * scores_lfreq + 0.07 * scores_hfreq
             batch_score = fused_scores.data.cpu().numpy().ravel()
         # add outputs
         fname_list.extend(utt_id)
