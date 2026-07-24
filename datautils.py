@@ -496,3 +496,44 @@ def genSpoof_list(dir_meta, is_train=False, is_eval=False):
             key = parts[1]
             file_list.append(key)
         return file_list
+    
+def gen_Spoof_19_list(dir_meta, is_train=False, is_eval=False):
+
+    d_meta = {}
+    file_list = []
+    with open(dir_meta, "r") as f:
+        l_meta = f.readlines()
+
+    if is_train:
+        for line in l_meta:
+            parts = line.strip().split()
+            if len(parts) < 5:
+                print(f"Incorrect line: {line}")
+                continue
+            key = parts[1]
+            label = parts[4]
+            file_list.append(key)
+            d_meta[key] = 1 if label == "bonafide" else 0
+        return d_meta, file_list
+
+    elif is_eval:
+        for line in l_meta:
+            parts = line.strip().split()
+            if len(parts) < 5:
+                print(f"Incorrect line: {line}")
+                continue
+            key = parts[1]
+            file_list.append(key)
+        return file_list
+
+    else:  # dev
+        for line in l_meta:
+            parts = line.strip().split()
+            if len(parts) < 5:
+                print(f"Incorrect line: {line}")
+                continue
+            key = parts[1]
+            label = parts[4]
+            file_list.append(key)
+            d_meta[key] = 1 if label == "bonafide" else 0
+        return d_meta, file_list
